@@ -1,7 +1,8 @@
-# 
-# Copyright 2014 JackpotClavin
 #
 # Android Blob Utility
+# Copyright (c) 2026 Eliminater74
+# Copyright (c) 2014 JackpotClavin (original author)
+# SPDX-License-Identifier: MIT
 #
 
 LOCAL_PATH:= $(call my-dir)
