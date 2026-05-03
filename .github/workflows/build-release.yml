@@ -27,7 +27,7 @@ jobs:
     name: Build (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: sudo apt-get install -y gcc make
@@ -39,7 +39,7 @@ jobs:
         run: file ./android-blob-utility && ./android-blob-utility --help 2>&1 || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-blob-utility-linux-x86_64
           path: android-blob-utility
@@ -52,7 +52,7 @@ jobs:
     name: Build (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build
         run: make
@@ -61,32 +61,35 @@ jobs:
         run: file ./android-blob-utility && ./android-blob-utility --help 2>&1 || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-blob-utility-macos
           path: android-blob-utility
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Windows cross-compile via MinGW on Linux
-  # Note: mmap is provided by MinGW-w64's POSIX compatibility layer.
-  # If the build fails, the release still ships Linux and macOS binaries.
+  # Windows cross-compile via MinGW on Linux.
+  # Uses compat/mman-win32.h (bundled) to supply mmap/munmap/memmem, which
+  # MinGW does not provide natively.
   # -------------------------------------------------------------------------
   build-windows:
     name: Build (Windows x86_64 via MinGW)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install MinGW
         run: sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - name: Build
-        run: make CC=x86_64-w64-mingw32-gcc MODULE=android-blob-utility.exe
+        run: |
+          make CC=x86_64-w64-mingw32-gcc \
+               MODULE=android-blob-utility.exe \
+               CFLAGS="-Wall -Wextra -I."
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-blob-utility-windows-x86_64
           path: android-blob-utility.exe
@@ -103,11 +106,11 @@ jobs:
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.create_release)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Cache generated SDK files
         id: cache-sdk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: emulator_systems/sdk_2*.txt
           # Bump the suffix (e.g. -v2) to force regeneration after script changes
@@ -133,7 +136,7 @@ jobs:
         run: ls -lh emulator_systems/
 
       - name: Upload SDK files artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emulator-sdk-files
           path: emulator_systems/
@@ -156,29 +159,29 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download Linux binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: android-blob-utility-linux-x86_64
           path: dist/linux
 
       - name: Download macOS binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: android-blob-utility-macos
           path: dist/macos
 
       - name: Download Windows binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: android-blob-utility-windows-x86_64
           path: dist/windows
         continue-on-error: true
 
       - name: Download SDK files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: emulator-sdk-files
           path: dist/emulator_systems
@@ -206,7 +209,7 @@ jobs:
           fi
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true

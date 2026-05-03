@@ -36,8 +36,12 @@
 
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  include "compat/mman-win32.h"
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
