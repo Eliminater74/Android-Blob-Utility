@@ -150,7 +150,7 @@ to_raw_img() {
         fmt=$(qemu-img info "$img" 2>/dev/null | awk '/^file format:/{print $3}')
         if [[ "$fmt" == "qcow2" || "$fmt" == "qcow" ]]; then
             info "    Converting $fmt → raw: $(basename "$img")"
-            if qemu-img convert -O raw "$img" "$raw" 2>/dev/null; then
+            if qemu-img convert -O raw -S 4k "$img" "$raw" 2>/dev/null; then
                 echo "$raw"
                 return 0
             fi
@@ -207,9 +207,12 @@ list_img_mount() {
     mnt="$WORK_DIR/mnt_$$"
     mkdir -p "$mnt"
 
-    sudo mount -o loop,ro "$raw" "$mnt"
-    find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
-    sudo umount "$mnt"
+    if sudo mount -t ext4 -o loop,ro "$raw" "$mnt" 2>/dev/null; then
+        find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
+        sudo umount "$mnt"
+    else
+        warn "loop-mount failed for $(basename "$img") (ext4 mount error or no loop support)"
+    fi
 
     rmdir "$mnt" 2>/dev/null || true
     rm -f "$raw"
@@ -227,23 +230,20 @@ list_image_files() {
         return 0
     fi
 
-    local result=""
-    if have_cmd debugfs; then
-        result=$(list_img_debugfs "$img" "$prefix")
-    fi
-
-    if [[ -n "$result" ]]; then
-        echo "$result"
-        return 0
-    fi
-
-    # debugfs gave nothing — image may be QCOW2 that wasn't converted, or
-    # an ext4 that requires mounting.  Fall back to loop-mount + find.
+    # Loop-mount + find is the only approach that yields complete recursive
+    # paths.  debugfs 'ls -r' means "raw format", not "recursive" — it only
+    # lists immediate children of /, giving ~1 KB of top-level entries.
     if have_cmd sudo; then
-        [[ -n "$result" ]] || info "    debugfs produced no entries; trying loop-mount fallback"
         list_img_mount "$img" "$prefix"
+        return $?
+    fi
+
+    # No sudo: fall back to debugfs for top-level-only partial listing.
+    if have_cmd debugfs; then
+        warn "No sudo — debugfs will only list top-level entries of $(basename "$img")"
+        list_img_debugfs "$img" "$prefix"
     else
-        warn "No file list obtained from $(basename "$img") (no debugfs output, no sudo)"
+        warn "Neither sudo nor debugfs available — cannot list $(basename "$img")"
     fi
 }
 
