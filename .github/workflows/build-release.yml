@@ -93,11 +93,11 @@ jobs:
           if-no-files-found: warn
 
   # -------------------------------------------------------------------------
-  # Generate missing SDK files (runs only when triggered manually or on a tag)
-  # Caches result so re-runs are fast.
+  # Generate SDK files for phone, Android TV, and Google TV.
+  # Runs only on tag push or manual release dispatch. Cached by script hash.
   # -------------------------------------------------------------------------
   generate-sdk-files:
-    name: Generate SDK files (27–35)
+    name: Generate SDK files (27–35, incl. TV/Google TV)
     runs-on: ubuntu-latest
     if: >
       startsWith(github.ref, 'refs/tags/v') ||
@@ -110,17 +110,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: emulator_systems/sdk_2*.txt
-          key: sdk-files-${{ hashFiles('tools/generate_sdk_files.sh') }}-v1
+          # Bump the suffix (e.g. -v2) to force regeneration after script changes
+          key: sdk-files-${{ hashFiles('tools/generate_sdk_files.sh') }}-tv-v1
 
       - name: Install tools
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get install -y e2fsprogs android-sdk-build-tools curl unzip python3
+          sudo apt-get install -y \
+            e2fsprogs \
+            curl \
+            unzip \
+            python3
 
-      - name: Generate SDK files
+      - name: Generate SDK files (phone + Android TV + Google TV merged)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         env:
           ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          MERGE_TV: "true"
         run: bash tools/generate_sdk_files.sh 27 28 29 30 31 32 33 34 35
 
       - name: List generated files
