@@ -178,34 +178,40 @@ to_raw_img() {
 }
 
 # ---------------------------------------------------------------------------
-# List all files inside an ext4 image using debugfs (no root required).
-# Outputs one path per line, each prefixed with $prefix.
-#
-# The debugfs 'ls -p -r' parseable format is:
-#   /inode/type/size/mode/uid/gid/name/
-# Use $(NF-1) for the name — the trailing slash makes $NF always empty.
+# List files via fuse2fs (FUSE-based ext4 mount — no loop device required).
+# fuse2fs ships with e2fsprogs and works even when 'sudo mount -o loop' fails.
 # ---------------------------------------------------------------------------
 
-list_img_debugfs() {
+list_img_fuse2fs() {
     local img="$1" prefix="$2"
-    local raw
+    local raw mnt
     raw="$(to_raw_img "$img")"
+    mnt="$WORK_DIR/fuse_$$"
+    mkdir -p "$mnt"
 
-    # ls -p: parseable format  ls -r: recursive (e2fsprogs >= 1.46)
-    # Format per line: /dir_inode/file_type/size/mode/uid/gid/name/
-    # $(NF-1) is the name regardless of exact field count — $NF is always
-    # the empty string after the trailing slash.
-    debugfs -R 'ls -p -r /' "$raw" 2>/dev/null \
-        | awk -F'/' -v p="$prefix" \
-              'NF>=8 { n=$(NF-1); if (n!="" && n!="." && n!="..") print p "/" n }' \
-        | sort -u
+    local ok=false
+    if fuse2fs "$raw" "$mnt" -o ro,fakeroot 2>/dev/null; then
+        ok=true
+    elif fuse2fs "$raw" "$mnt" -o ro 2>/dev/null; then
+        ok=true
+    fi
 
+    if $ok; then
+        find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
+        fusermount -u "$mnt" 2>/dev/null \
+            || fusermount3 -u "$mnt" 2>/dev/null \
+            || sudo umount "$mnt" 2>/dev/null \
+            || true
+    else
+        warn "fuse2fs failed for $(basename "$img")"
+    fi
+
+    rmdir "$mnt" 2>/dev/null || true
     rm -f "$raw"
 }
 
 # ---------------------------------------------------------------------------
-# List all files inside an ext4 image by loop-mounting it (requires sudo).
-# Outputs one path per line, each prefixed with $prefix.
+# List files via loop-mount (requires kernel loop-device support + sudo).
 # ---------------------------------------------------------------------------
 
 list_img_mount() {
@@ -215,7 +221,8 @@ list_img_mount() {
     mnt="$WORK_DIR/mnt_$$"
     mkdir -p "$mnt"
 
-    # Try ext4 first, then erofs (Android 11+ system partitions), then auto.
+    sudo modprobe loop 2>/dev/null || true
+
     local mounted=false fstype
     for fstype in ext4 erofs ""; do
         local opts="-o loop,ro"
@@ -230,7 +237,7 @@ list_img_mount() {
         find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
         sudo umount "$mnt"
     else
-        warn "All mount attempts failed for $(basename "$img") — check image format"
+        warn "loop-mount failed for $(basename "$img")"
     fi
 
     rmdir "$mnt" 2>/dev/null || true
@@ -238,7 +245,9 @@ list_img_mount() {
 }
 
 # ---------------------------------------------------------------------------
-# Generic: list files from an image, trying debugfs first, then mount.
+# Generic: list all files from a partition image.
+# Strategy (in order): fuse2fs → loop-mount → warn.
+# fuse2fs is preferred because it doesn't need loop device kernel support.
 # ---------------------------------------------------------------------------
 
 list_image_files() {
@@ -249,20 +258,23 @@ list_image_files() {
         return 0
     fi
 
-    # Loop-mount + find is the only approach that yields complete recursive
-    # paths.  debugfs 'ls -r' means "raw format", not "recursive" — it only
-    # lists immediate children of /, giving ~1 KB of top-level entries.
-    if have_cmd sudo; then
-        list_img_mount "$img" "$prefix"
-        return $?
+    local result=""
+
+    # 1. fuse2fs — FUSE-based, no loop device required
+    if have_cmd fuse2fs; then
+        result=$(list_img_fuse2fs "$img" "$prefix")
     fi
 
-    # No sudo: fall back to debugfs for top-level-only partial listing.
-    if have_cmd debugfs; then
-        warn "No sudo — debugfs will only list top-level entries of $(basename "$img")"
-        list_img_debugfs "$img" "$prefix"
+    # 2. loop-mount fallback (needs kernel loop support)
+    if [[ -z "$result" ]] && have_cmd sudo; then
+        info "    fuse2fs gave no output; trying loop-mount for $(basename "$img")"
+        result=$(list_img_mount "$img" "$prefix")
+    fi
+
+    if [[ -n "$result" ]]; then
+        echo "$result"
     else
-        warn "Neither sudo nor debugfs available — cannot list $(basename "$img")"
+        warn "All listing methods failed for $(basename "$img")"
     fi
 }
 
