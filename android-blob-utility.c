@@ -412,7 +412,7 @@ void get_full_lib_name(char *found_lib) {
 
     char full_name[512] = {0};
 
-    long len;
+    ptrdiff_t len;
     int num_chars;
     int i;
 
@@ -473,8 +473,8 @@ void get_full_lib_name(char *found_lib) {
         ptr--;
         peek--;
     }
-    len = (long)(found_lib + strlen(lib_beginning)) - (long)ptr;
-    strncpy(full_name, ptr, len);
+    len = (found_lib + (ptrdiff_t)strlen(lib_beginning)) - ptr;
+    strncpy(full_name, ptr, (size_t)len);
 
     check_emulator_for_lib(full_name);
 }

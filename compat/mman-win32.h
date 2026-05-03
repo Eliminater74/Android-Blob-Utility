@@ -1,9 +1,9 @@
 /*
- * compat/mman-win32.h — minimal POSIX mmap/munmap/memmem for Windows (MinGW)
+ * compat/mman-win32.h — POSIX compatibility shim for Windows (MinGW)
  *
- * Provides the small subset of POSIX memory-mapping and string-search APIs
- * that android-blob-utility uses, implemented on top of the Win32 API.
- * Only included when compiling for Windows (_WIN32).
+ * Provides mmap/munmap, memmem, and getline — all POSIX/GNU extensions
+ * that MinGW-w64 does not ship — implemented with Win32 APIs and standard C.
+ * Included only when _WIN32 is defined.
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Eliminater74
@@ -16,8 +16,16 @@
 
 #include <windows.h>
 #include <io.h>        /* _get_osfhandle, _access */
+#include <stdio.h>     /* FILE, fgetc */
+#include <stdlib.h>    /* malloc, realloc */
 #include <string.h>    /* memcmp */
-#include <stddef.h>    /* size_t */
+#include <stddef.h>    /* size_t, ptrdiff_t */
+
+/* ssize_t is not defined on Windows */
+#ifndef _SSIZE_T_DEFINED
+#define _SSIZE_T_DEFINED
+typedef long long ssize_t;
+#endif
 
 /* ---- mmap constants (only the ones we actually use) ---- */
 #ifndef PROT_READ
@@ -32,8 +40,6 @@
 
 /*
  * mmap — read-only file mapping via Win32 CreateFileMapping/MapViewOfFile.
- * addr, prot, flags, and offset are accepted but ignored; we always map
- * the whole file read-only from the start, which is all this program needs.
  */
 static inline void *mmap(void *addr, size_t length, int prot, int flags,
                           int fd, long offset)
@@ -70,21 +76,62 @@ static inline void *memmem(const void *haystack, size_t haystacklen,
 {
     const char *h = (const char *)haystack;
     const char *n = (const char *)needle;
+    size_t i;
 
     if (needlelen == 0)
         return (void *)haystack;
     if (haystacklen < needlelen)
         return NULL;
 
-    for (size_t i = 0; i <= haystacklen - needlelen; i++)
+    for (i = 0; i <= haystacklen - needlelen; i++)
         if (memcmp(h + i, n, needlelen) == 0)
             return (void *)(h + i);
 
     return NULL;
 }
 
-/* access() is _access() under MSVC but MinGW maps it — include the header */
-#include <io.h>
+/*
+ * getline — read a line from a stream, growing the buffer as needed.
+ * POSIX.1-2008 extension; not in MinGW-w64's msvcrt.dll.
+ */
+static inline ssize_t getline(char **lineptr, size_t *n, FILE *stream)
+{
+    size_t pos = 0;
+    int c;
+
+    if (!lineptr || !n || !stream)
+        return -1;
+
+    if (!*lineptr || *n == 0) {
+        *n = 128;
+        *lineptr = (char *)malloc(*n);
+        if (!*lineptr)
+            return -1;
+    }
+
+    while ((c = fgetc(stream)) != EOF) {
+        /* grow buffer if needed (leave room for '\0') */
+        if (pos + 1 >= *n) {
+            size_t new_size = *n * 2;
+            char *tmp = (char *)realloc(*lineptr, new_size);
+            if (!tmp)
+                return -1;
+            *lineptr = tmp;
+            *n = new_size;
+        }
+        (*lineptr)[pos++] = (char)c;
+        if (c == '\n')
+            break;
+    }
+
+    if (pos == 0 && c == EOF)
+        return -1;
+
+    (*lineptr)[pos] = '\0';
+    return (ssize_t)pos;
+}
+
+/* F_OK for access() */
 #ifndef F_OK
 #define F_OK 0
 #endif
