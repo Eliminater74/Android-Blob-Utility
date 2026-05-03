@@ -349,8 +349,28 @@ generate_for_sdk() {
     info "=== Generating sdk_${sdk_ver}.txt ==="
 
     # ---- Base variant (phone/tablet) ----
-    install_image "$sdk_ver" "$SDK_VARIANT" "$SDK_ARCH"
-    collect_variant_files "$sdk_ver" "$SDK_VARIANT" "$SDK_ARCH" "$tmp_file" \
+    # Some older SDKs (e.g. 27, 28) were only published for x86, not x86_64.
+    # Try SDK_ARCH first; if system.img is absent after install, fall back to x86.
+    local base_arch="" arch_candidates=("$SDK_ARCH")
+    [[ "$SDK_ARCH" != "x86" ]] && arch_candidates+=("x86")
+
+    local try_arch
+    for try_arch in "${arch_candidates[@]}"; do
+        [[ "$try_arch" == "$SDK_ARCH" ]] \
+            || info "  $SDK_ARCH not available for SDK $sdk_ver — trying $try_arch"
+        install_image "$sdk_ver" "$SDK_VARIANT" "$try_arch"
+        local img_dir="$ANDROID_SDK_ROOT/system-images/android-${sdk_ver}/${SDK_VARIANT}/${try_arch}"
+        if [[ -f "$img_dir/system.img" ]]; then
+            base_arch="$try_arch"
+            break
+        fi
+        warn "system.img not found after install (${SDK_VARIANT}/${try_arch})"
+    done
+
+    [[ -n "$base_arch" ]] \
+        || die "Failed to install base image for SDK $sdk_ver (tried: ${arch_candidates[*]})"
+
+    collect_variant_files "$sdk_ver" "$SDK_VARIANT" "$base_arch" "$tmp_file" \
         || die "Failed to collect base image files for SDK $sdk_ver"
 
     # ---- TV / Google TV variants ----
