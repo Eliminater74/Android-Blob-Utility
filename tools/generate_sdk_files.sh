@@ -144,11 +144,28 @@ to_raw_img() {
     local img="$1"
     local raw="${img%.img}_$$.raw"
 
-    if have_cmd simg2img; then
-        simg2img "$img" "$raw" 2>/dev/null || cp "$img" "$raw"
-    else
-        cp "$img" "$raw"
+    # Detect QCOW2/qcow and convert to raw ext4 (newer SDK images use QCOW2)
+    if have_cmd qemu-img; then
+        local fmt
+        fmt=$(qemu-img info "$img" 2>/dev/null | awk '/^file format:/{print $3}')
+        if [[ "$fmt" == "qcow2" || "$fmt" == "qcow" ]]; then
+            info "    Converting $fmt → raw: $(basename "$img")"
+            if qemu-img convert -O raw "$img" "$raw" 2>/dev/null; then
+                echo "$raw"
+                return 0
+            fi
+            warn "qemu-img convert failed for $(basename "$img"); falling through"
+        fi
     fi
+
+    # Android sparse ext4 → raw ext4
+    if have_cmd simg2img && simg2img "$img" "$raw" 2>/dev/null; then
+        echo "$raw"
+        return 0
+    fi
+
+    # Assume already raw ext4
+    cp "$img" "$raw"
     echo "$raw"
 }
 
@@ -158,7 +175,7 @@ to_raw_img() {
 #
 # The debugfs 'ls -p -r' parseable format is:
 #   /inode/type/size/mode/uid/gid/name/
-# so the filename is field 8 when split on '/'.
+# Use $(NF-1) for the name — the trailing slash makes $NF always empty.
 # ---------------------------------------------------------------------------
 
 list_img_debugfs() {
@@ -166,15 +183,13 @@ list_img_debugfs() {
     local raw
     raw="$(to_raw_img "$img")"
 
-    debugfs -R 'ls -l -r /' "$raw" 2>/dev/null \
-        | grep -oP '(?<=\s{2})[^\s].*' \
-        | awk -v prefix="$prefix" '{ print prefix "/" $NF }' \
-        | grep -v '\.\.$' \
-        | grep -v '\.$' \
-        | sort -u \
-        || debugfs -R 'ls -p -r /' "$raw" 2>/dev/null \
-        | awk -F'/' -v prefix="$prefix" \
-              '$8 != "" && $8 != "." && $8 != ".." { print prefix "/" $8 }' \
+    # ls -p: parseable format  ls -r: recursive (e2fsprogs >= 1.46)
+    # Format per line: /dir_inode/file_type/size/mode/uid/gid/name/
+    # $(NF-1) is the name regardless of exact field count — $NF is always
+    # the empty string after the trailing slash.
+    debugfs -R 'ls -p -r /' "$raw" 2>/dev/null \
+        | awk -F'/' -v p="$prefix" \
+              'NF>=8 { n=$(NF-1); if (n!="" && n!="." && n!="..") print p "/" n }' \
         | sort -u
 
     rm -f "$raw"
@@ -212,12 +227,23 @@ list_image_files() {
         return 0
     fi
 
+    local result=""
     if have_cmd debugfs; then
-        list_img_debugfs "$img" "$prefix"
-    elif have_cmd sudo; then
+        result=$(list_img_debugfs "$img" "$prefix")
+    fi
+
+    if [[ -n "$result" ]]; then
+        echo "$result"
+        return 0
+    fi
+
+    # debugfs gave nothing — image may be QCOW2 that wasn't converted, or
+    # an ext4 that requires mounting.  Fall back to loop-mount + find.
+    if have_cmd sudo; then
+        [[ -n "$result" ]] || info "    debugfs produced no entries; trying loop-mount fallback"
         list_img_mount "$img" "$prefix"
     else
-        warn "Neither debugfs nor sudo available — cannot list $img"
+        warn "No file list obtained from $(basename "$img") (no debugfs output, no sudo)"
     fi
 }
 

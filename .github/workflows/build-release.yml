@@ -123,7 +123,8 @@ jobs:
             e2fsprogs \
             curl \
             unzip \
-            python3
+            python3 \
+            qemu-utils
 
       - name: Generate SDK files (phone + Android TV + Google TV merged)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
