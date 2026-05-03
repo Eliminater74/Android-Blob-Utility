@@ -124,7 +124,9 @@ jobs:
             curl \
             unzip \
             python3 \
-            qemu-utils
+            qemu-utils \
+            simg2img \
+            erofs-utils
 
       - name: Generate SDK files (phone + Android TV + Google TV merged)
         if: steps.cache-sdk.outputs.cache-hit != 'true'

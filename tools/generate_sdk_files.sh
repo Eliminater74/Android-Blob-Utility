@@ -144,27 +144,35 @@ to_raw_img() {
     local img="$1"
     local raw="${img%.img}_$$.raw"
 
-    # Detect QCOW2/qcow and convert to raw ext4 (newer SDK images use QCOW2)
+    # Use 'file' for reliable format detection (qemu-img reports "raw" for
+    # Android sparse images and therefore can't distinguish them from real raw).
+    local magic=""
+    have_cmd file && magic=$(file -b "$img" 2>/dev/null)
+
+    # Android sparse ext4 → raw ext4  (most common format from sdkmanager)
+    if [[ "$magic" == *"Android sparse image"* ]]; then
+        info "    Android sparse detected: $(basename "$img")"
+        if have_cmd simg2img && simg2img "$img" "$raw" 2>/dev/null; then
+            echo "$raw"; return 0
+        fi
+        warn "simg2img not available or failed for $(basename "$img") — mount will likely fail"
+        cp "$img" "$raw"; echo "$raw"; return 0
+    fi
+
+    # QCOW2 → raw ext4
     if have_cmd qemu-img; then
         local fmt
         fmt=$(qemu-img info "$img" 2>/dev/null | awk '/^file format:/{print $3}')
         if [[ "$fmt" == "qcow2" || "$fmt" == "qcow" ]]; then
             info "    Converting $fmt → raw: $(basename "$img")"
             if qemu-img convert -O raw -S 4k "$img" "$raw" 2>/dev/null; then
-                echo "$raw"
-                return 0
+                echo "$raw"; return 0
             fi
             warn "qemu-img convert failed for $(basename "$img"); falling through"
         fi
     fi
 
-    # Android sparse ext4 → raw ext4
-    if have_cmd simg2img && simg2img "$img" "$raw" 2>/dev/null; then
-        echo "$raw"
-        return 0
-    fi
-
-    # Assume already raw ext4
+    # Raw ext4 / erofs / unknown — use as-is
     cp "$img" "$raw"
     echo "$raw"
 }
@@ -207,11 +215,22 @@ list_img_mount() {
     mnt="$WORK_DIR/mnt_$$"
     mkdir -p "$mnt"
 
-    if sudo mount -t ext4 -o loop,ro "$raw" "$mnt" 2>/dev/null; then
+    # Try ext4 first, then erofs (Android 11+ system partitions), then auto.
+    local mounted=false fstype
+    for fstype in ext4 erofs ""; do
+        local opts="-o loop,ro"
+        [[ -n "$fstype" ]] && opts="-t $fstype $opts"
+        # shellcheck disable=SC2086
+        if sudo mount $opts "$raw" "$mnt" 2>/dev/null; then
+            mounted=true; break
+        fi
+    done
+
+    if $mounted; then
         find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
         sudo umount "$mnt"
     else
-        warn "loop-mount failed for $(basename "$img") (ext4 mount error or no loop support)"
+        warn "All mount attempts failed for $(basename "$img") — check image format"
     fi
 
     rmdir "$mnt" 2>/dev/null || true
