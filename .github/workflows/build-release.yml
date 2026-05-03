@@ -125,7 +125,7 @@ jobs:
             unzip \
             python3 \
             qemu-utils \
-            simg2img \
+            android-sdk-libsparse-utils \
             erofs-utils
 
       - name: Generate SDK files (phone + Android TV + Google TV merged)
