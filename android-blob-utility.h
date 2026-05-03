@@ -24,21 +24,27 @@
 #define _GNU_SOURCE
 #include <stdlib.h>
 
-#define MAX_LIB_NAME 50
-#define ALL_LIBS_SIZE 16384 /* 16KB */
+#define MAX_LIB_NAME 128
+#define ALL_LIBS_SIZE 131072 /* 128KB — modern Android has far more libraries */
 
 /* #define DEBUG */
 
 /* Change value below to match your /system dump's SDK version. */
 /* See: https://developer.android.com/guide/topics/manifest/uses-sdk-element.html#ApiLevels */
-#define SYSTEM_DUMP_SDK_VERSION 19 /* Android KitKat*/
+#define SYSTEM_DUMP_SDK_VERSION 19 /* Android KitKat */
 
 #define SYSTEM_DUMP_ROOT "/home/android/system_dump"
 
 #define SYSTEM_VENDOR "manufacturer"
 #define SYSTEM_DEVICE "device"
 
+/*
+ * Search directories for proprietary blobs, checked in order.
+ * Covers pre-Treble /system/vendor/, post-Treble /vendor/ (SDK 26+),
+ * and APEX module paths (SDK 29+).
+ */
 const char *blob_directories[] = {
+    /* Vendor partition (post-Treble, Android 8.0+) */
     "/vendor/lib64/egl/",
     "/vendor/lib/egl/",
     "/vendor/lib64/hw/",
@@ -46,6 +52,24 @@ const char *blob_directories[] = {
     "/vendor/lib64/",
     "/vendor/lib/",
     "/vendor/bin/",
+    /* APEX modules (Android 10+, SDK 29+) */
+    "/apex/com.android.art/lib64/",
+    "/apex/com.android.art/lib/",
+    "/apex/com.android.i18n/lib64/",
+    "/apex/com.android.i18n/lib/",
+    "/apex/com.android.media/lib64/",
+    "/apex/com.android.media/lib/",
+    "/apex/com.android.media.swcodec/lib64/",
+    "/apex/com.android.media.swcodec/lib/",
+    "/apex/com.android.neuralnetworks/lib64/",
+    "/apex/com.android.neuralnetworks/lib/",
+    "/apex/com.android.os.statsd/lib64/",
+    "/apex/com.android.os.statsd/lib/",
+    "/apex/com.android.runtime/lib64/",
+    "/apex/com.android.runtime/lib/",
+    "/apex/com.android.tethering/lib64/",
+    "/apex/com.android.tethering/lib/",
+    /* System partition */
     "/lib64/egl/",
     "/lib/egl/",
     "/lib64/hw/",

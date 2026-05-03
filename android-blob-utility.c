@@ -40,11 +40,11 @@
 bool dot_so_finder(char *filename);
 void check_emulator_for_lib(char *emulator_check);
 
-char system_dump_root[256] = SYSTEM_DUMP_ROOT;
+char system_dump_root[512] = SYSTEM_DUMP_ROOT;
 
-char system_vendor[32] = SYSTEM_VENDOR;
+char system_vendor[64] = SYSTEM_VENDOR;
 
-char system_device[32] = SYSTEM_DEVICE;
+char system_device[64] = SYSTEM_DEVICE;
 
 char all_libs[ALL_LIBS_SIZE] = {0};
 char *sdk_buffer;
@@ -90,7 +90,7 @@ bool char_is_valid(char *s) {
         return true;
     if (*s == 0)
         return true;
-    if (*s == '%') /* wildcard, bitches! */
+    if (*s == '%') /* wildcard */
         return true;
     return false;
 }
@@ -134,12 +134,14 @@ void mark_lib_as_processed(char *lib) {
 }
 
 /* Just a little function to check if the user has inputted the correct folder that this program
- * is expecting to receive from the user
+ * is expecting to receive from the user.
+ * Also reads sdk version, vendor, and device name from build.prop.
+ * For Android 9+ the vendor build.prop is tried as a fallback.
  */
 
 bool build_prop_checker(void) {
 
-    char buildprop_checker[256];
+    char buildprop_checker[512];
     char *line, *value;
     long l;
     size_t n;
@@ -147,7 +149,12 @@ bool build_prop_checker(void) {
 
     sprintf(buildprop_checker, "%s/build.prop", system_dump_root);
     fp = fopen(buildprop_checker, "r");
-    if (! fp) {
+    if (!fp) {
+        /* Android 10+ may not have a top-level build.prop; try system/build.prop */
+        sprintf(buildprop_checker, "%s/system/build.prop", system_dump_root);
+        fp = fopen(buildprop_checker, "r");
+    }
+    if (!fp) {
         fprintf(stderr, "Error: build.prop file not found in system dump's root.\n");
         fprintf(stderr, "Your path to the system dump is not correct.\n");
         fprintf(stderr, "The command:\n");
@@ -205,7 +212,7 @@ bool find_wildcard_libraries(char *beginning, char *end) {
 
     DIR *dir;
     struct dirent *dirent;
-    char full_path[256] = {0};
+    char full_path[512] = {0};
     int i;
     bool found = false;
 
@@ -241,8 +248,8 @@ bool find_wildcard_libraries(char *beginning, char *end) {
 bool process_wildcard(char *wildcard) {
 
     char *ptr;
-    char beginning[64] = {0};
-    char end[64] = {0};
+    char beginning[128] = {0};
+    char end[128] = {0};
 
     ptr = strchr(wildcard, '%');
     if (ptr) {
@@ -252,6 +259,15 @@ bool process_wildcard(char *wildcard) {
     }
 
     return find_wildcard_libraries(beginning, end);
+}
+
+/*
+ * Return true if this blob directory belongs to a non-system partition
+ * (vendor or apex). Used to produce correct partition mapping in the output.
+ */
+static bool is_non_system_partition(const char *dir) {
+    return strncmp(dir, "/vendor/", 8) == 0 ||
+           strncmp(dir, "/apex/",   6) == 0;
 }
 
 /* This checks to see if the library that is called/mentioned or in another library or daemon is even
@@ -266,15 +282,31 @@ bool process_wildcard(char *wildcard) {
 bool get_lib_from_system_dump(char *system_check) {
 
     int i;
-    char system_dump_path_to_blob[256];
+    char system_dump_path_to_blob[512];
     bool found_hit = false;
 
     for (i = 0; blob_directories[i]; i++) {
         sprintf(system_dump_path_to_blob, "%s%s%s", system_dump_root, blob_directories[i],
                 system_check);
         if (!access(system_dump_path_to_blob, F_OK)) {
-            printf("vendor/%s/%s/proprietary%s%s:system%s%s \\\n", system_vendor, system_device,
-                    blob_directories[i], system_check, blob_directories[i], system_check);
+            const char *dir = blob_directories[i];
+            /*
+             * Post-Treble (Android 8.0+, SDK 26+): vendor and apex blobs live on their
+             * own partitions, so the destination mapping omits the "system" prefix.
+             * Pre-Treble: everything lives under the system partition.
+             */
+            if (is_non_system_partition(dir)) {
+                /* dir is "/vendor/lib64/" → dir+1 is "vendor/lib64/" */
+                printf("vendor/%s/%s/proprietary%s%s:%s%s \\\n",
+                       system_vendor, system_device,
+                       dir, system_check,
+                       dir + 1, system_check);
+            } else {
+                printf("vendor/%s/%s/proprietary%s%s:system%s%s \\\n",
+                       system_vendor, system_device,
+                       dir, system_check,
+                       dir, system_check);
+            }
             found_hit = dot_so_finder(system_dump_path_to_blob);
         }
     }
@@ -297,19 +329,28 @@ bool get_lib_from_system_dump(char *system_check) {
 /* We scan through the emulator's library directories and see if there's a hit. If there is,
  * we don't display anything. If there is no hit, we hand it over to the function called
  * get_lib_from_system_dump.
+ *
+ * Two path styles are checked per directory:
+ *   1. /system<dir><lib>  — pre-Treble layout (everything under /system)
+ *   2. <dir><lib>         — post-Treble/APEX layout (/vendor/..., /apex/...)
  */
 
 void check_emulator_for_lib(char *emulator_check) {
 
-    char emulator_full_path[256];
+    char emulator_full_path[512];
     int i;
 
     if (check_if_repeat(emulator_check))
         return;
 
     for (i = 0; blob_directories[i]; i++) {
+        /* Check pre-Treble path: /system/vendor/lib64/libfoo.so */
         sprintf(emulator_full_path, "/system%s%s", blob_directories[i], emulator_check);
-        /* don't do anything if the file is in the emulator, as that means it's not proprietary. */
+        if (check_emulator_files_for_match(emulator_full_path))
+            return;
+
+        /* Check post-Treble / APEX path: /vendor/lib64/libfoo.so or /apex/.../libfoo.so */
+        sprintf(emulator_full_path, "%s%s", blob_directories[i], emulator_check);
         if (check_emulator_files_for_match(emulator_full_path))
             return;
     }
@@ -358,7 +399,7 @@ void get_full_lib_name(char *found_lib) {
 
     char *ptr, *peek;
 
-    char full_name[256] = {0};
+    char full_name[512] = {0};
 
     long len;
     int num_chars;
@@ -369,7 +410,7 @@ void get_full_lib_name(char *found_lib) {
 
     /* if there's a false-positive in finding matching ".so", but it isn't ever referencing
      * a library, it's probably just instructions that slipped through the cracks. In this case
-     * we will rewind the pointer that's searching for "lib" or "egl" MAX_LIB_NAME (default 50)
+     * we will rewind the pointer that's searching for "lib" or "egl" MAX_LIB_NAME (default 128)
      * times, in which we will bail out citing that it was probably a false-positive
      */
     for (num_chars = 0; num_chars <= MAX_LIB_NAME; num_chars++) {
@@ -410,7 +451,7 @@ void get_full_lib_name(char *found_lib) {
         if (num_chars == MAX_LIB_NAME) {
 #ifdef DEBUG
             fprintf(stderr, "Character limit exceeded! Full string was:\n");
-            for (num_chars = 0; num_chars < MAX_LIB_NAME + strlen(lib_beginning); num_chars++) {
+            for (num_chars = 0; num_chars < MAX_LIB_NAME + (int)strlen(lib_beginning); num_chars++) {
                 fprintf(stderr, "%c", *ptr);
                 ptr++;
             }
@@ -510,8 +551,8 @@ void remove_unwanted_characters(char *input) {
 
 void read_user_input(char *input, int len, char *fmt) {
 
-    char message[256];
-    char res[256];
+    char message[512];
+    char res[512];
 #ifdef USE_READLINE
     char *tmp;
 #endif
@@ -540,14 +581,17 @@ void read_user_input(char *input, int len, char *fmt) {
 int main(int argc, char **argv) {
 
     char *last_slash;
-    char emulator_system_file[32], *sdkversionstr;
+    char emulator_system_file[64], *sdkversionstr;
     size_t n;
     int num_files;
     long length = 0;
     FILE *fp;
 
-    char filename_buf[256];
+    char filename_buf[512];
     char *filename = filename_buf;
+
+    (void)argc;
+    (void)argv;
 
 #ifndef VARIABLES_PROVIDED
     read_user_input(system_dump_root, sizeof(system_dump_root), "System dump root?\n");
@@ -572,6 +616,7 @@ int main(int argc, char **argv) {
     fp = fopen(emulator_system_file, "r");
     if (!fp) {
         fprintf(stderr, "SDK text file %s not found, exiting!\n", emulator_system_file);
+        fprintf(stderr, "Run tools/generate_sdk_files.sh to generate missing SDK files.\n");
         return 1;
     }
     fseek(fp, 0, SEEK_END);
@@ -602,8 +647,6 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "Completed successfully.\n");
     free(sdk_buffer);
-    argc = argc;
-    argv = argv;
 
     return 0;
 }

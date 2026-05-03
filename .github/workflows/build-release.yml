@@ -1,0 +1,211 @@
+name: Build and Release
+
+on:
+  push:
+    branches: ['**']
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub release from this build'
+        required: false
+        type: boolean
+        default: false
+      tag_name:
+        description: 'Tag name for manual release (e.g. v1.1.0)'
+        required: false
+        type: string
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Linux build
+  # -------------------------------------------------------------------------
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y gcc make
+
+      - name: Build
+        run: make
+
+      - name: Smoke-test binary
+        run: file ./android-blob-utility && ./android-blob-utility --help 2>&1 || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-blob-utility-linux-x86_64
+          path: android-blob-utility
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # macOS build
+  # -------------------------------------------------------------------------
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Smoke-test binary
+        run: file ./android-blob-utility && ./android-blob-utility --help 2>&1 || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-blob-utility-macos
+          path: android-blob-utility
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # Windows cross-compile via MinGW on Linux
+  # Note: mmap is provided by MinGW-w64's POSIX compatibility layer.
+  # If the build fails, the release still ships Linux and macOS binaries.
+  # -------------------------------------------------------------------------
+  build-windows:
+    name: Build (Windows x86_64 via MinGW)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build
+        run: make CC=x86_64-w64-mingw32-gcc MODULE=android-blob-utility.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-blob-utility-windows-x86_64
+          path: android-blob-utility.exe
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # Generate missing SDK files (runs only when triggered manually or on a tag)
+  # Caches result so re-runs are fast.
+  # -------------------------------------------------------------------------
+  generate-sdk-files:
+    name: Generate SDK files (27–35)
+    runs-on: ubuntu-latest
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache generated SDK files
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: emulator_systems/sdk_2*.txt
+          key: sdk-files-${{ hashFiles('tools/generate_sdk_files.sh') }}-v1
+
+      - name: Install tools
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y e2fsprogs android-sdk-build-tools curl unzip python3
+
+      - name: Generate SDK files
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+        run: bash tools/generate_sdk_files.sh 27 28 29 30 31 32 33 34 35
+
+      - name: List generated files
+        run: ls -lh emulator_systems/
+
+      - name: Upload SDK files artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-sdk-files
+          path: emulator_systems/
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # Create GitHub Release
+  # Triggered by: pushing a vX.Y.Z tag  OR  workflow_dispatch with release=true
+  # -------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos, build-windows, generate-sdk-files]
+    if: >
+      always() &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.create_release)) &&
+      needs.build-linux.result == 'success' &&
+      needs.build-macos.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: android-blob-utility-linux-x86_64
+          path: dist/linux
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: android-blob-utility-macos
+          path: dist/macos
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: android-blob-utility-windows-x86_64
+          path: dist/windows
+        continue-on-error: true
+
+      - name: Download SDK files
+        uses: actions/download-artifact@v4
+        with:
+          name: emulator-sdk-files
+          path: dist/emulator_systems
+        continue-on-error: true
+
+      - name: Rename binaries for release
+        run: |
+          mv dist/linux/android-blob-utility  dist/android-blob-utility-linux-x86_64   || true
+          mv dist/macos/android-blob-utility  dist/android-blob-utility-macos           || true
+          mv dist/windows/android-blob-utility.exe dist/android-blob-utility-windows-x86_64.exe || true
+
+      - name: Package SDK files
+        run: |
+          if [ -d dist/emulator_systems ]; then
+            tar -czf dist/emulator_systems.tar.gz -C dist emulator_systems/
+          fi
+
+      - name: Determine tag name
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+            echo "tag=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/android-blob-utility-linux-x86_64
+            dist/android-blob-utility-macos
+            dist/android-blob-utility-windows-x86_64.exe
+            dist/emulator_systems.tar.gz
