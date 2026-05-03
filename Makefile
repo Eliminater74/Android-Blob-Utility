@@ -14,25 +14,30 @@ ifeq ($(VARIABLES_PROVIDED), true)
 	CFLAGS += -DVARIABLES_PROVIDED
 endif
 
-MODULE = android-blob-utility
-SRC    = android-blob-utility.c
+NAME   = android-blob-utility
+SRC    = $(NAME).c
+HDR    = $(NAME).h
+
+# MODULE may be overridden by the caller (e.g. MODULE=android-blob-utility.exe)
+# without affecting the header dependency, which is always $(HDR).
+MODULE ?= $(NAME)
 
 all: $(MODULE)
 
-$(MODULE): $(SRC) $(MODULE).h
+$(MODULE): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 # Cross-compile for Windows using MinGW (Linux host only)
 windows:
-	$(MAKE) CC=x86_64-w64-mingw32-gcc MODULE=android-blob-utility.exe
+	$(MAKE) CC=x86_64-w64-mingw32-gcc MODULE=$(NAME).exe
 
-install: $(MODULE)
-	install -m 755 $(MODULE) /usr/local/bin/
+install: $(NAME)
+	install -m 755 $(NAME) /usr/local/bin/
 
 uninstall:
-	rm -f /usr/local/bin/$(MODULE)
+	rm -f /usr/local/bin/$(NAME)
 
 clean:
-	-rm -f $(MODULE) $(MODULE).exe
+	-rm -f $(NAME) $(NAME).exe
 
 .PHONY: all windows install uninstall clean
