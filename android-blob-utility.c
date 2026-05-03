@@ -31,6 +31,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <dirent.h>
 
