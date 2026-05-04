@@ -178,39 +178,6 @@ to_raw_img() {
 }
 
 # ---------------------------------------------------------------------------
-# List files via fuse2fs (FUSE-based ext4 mount — no loop device required).
-# fuse2fs ships with e2fsprogs and works even when 'sudo mount -o loop' fails.
-# ---------------------------------------------------------------------------
-
-list_img_fuse2fs() {
-    local img="$1" prefix="$2"
-    local raw mnt
-    raw="$(to_raw_img "$img")"
-    mnt="$WORK_DIR/fuse_$$"
-    mkdir -p "$mnt"
-
-    local ok=false
-    if fuse2fs "$raw" "$mnt" -o ro,fakeroot 2>/dev/null; then
-        ok=true
-    elif fuse2fs "$raw" "$mnt" -o ro 2>/dev/null; then
-        ok=true
-    fi
-
-    if $ok; then
-        find "$mnt" \( -type f -o -type l \) | sed "s|$mnt|$prefix|" | sort
-        fusermount -u "$mnt" 2>/dev/null \
-            || fusermount3 -u "$mnt" 2>/dev/null \
-            || sudo umount "$mnt" 2>/dev/null \
-            || true
-    else
-        warn "fuse2fs failed for $(basename "$img")"
-    fi
-
-    rmdir "$mnt" 2>/dev/null || true
-    rm -f "$raw"
-}
-
-# ---------------------------------------------------------------------------
 # List files via loop-mount (requires kernel loop-device support + sudo).
 # ---------------------------------------------------------------------------
 
@@ -245,9 +212,93 @@ list_img_mount() {
 }
 
 # ---------------------------------------------------------------------------
+# List files via Python + debugfs — no mount or loop device required.
+#
+# Sends batches of 64 'ls -p <dir>' commands to a single debugfs process,
+# separated by '!echo DIRMARK:<path>' sentinels so we can correlate each
+# directory's output and reconstruct full paths.
+#
+# Requires: debugfs (e2fsprogs, already installed) + python3.
+# Works on raw ext4 images produced by simg2img.
+# ---------------------------------------------------------------------------
+
+list_img_debugfs_recursive() {
+    local img="$1" prefix="$2"
+    local raw
+    raw="$(to_raw_img "$img")"
+
+    info "    Using Python/debugfs recursive listing for $(basename "$img") ..."
+
+    python3 - "$raw" "$prefix" <<'PYEOF'
+import sys, subprocess
+
+MARK = "XDIRMARKX:"
+
+def list_ext4(image, prefix):
+    dirs, seen, results = ['/'], set(), []
+
+    while dirs:
+        # Build a batch of up to 64 unseen directories
+        batch = []
+        while dirs and len(batch) < 64:
+            d = dirs.pop(0)
+            if d not in seen:
+                seen.add(d)
+                batch.append(d)
+        if not batch:
+            break
+
+        # One debugfs invocation for the whole batch.
+        # !echo prints the marker to stdout so we can split outputs.
+        script = ''
+        for d in batch:
+            script += f'!echo "{MARK}{d}"\n'
+            script += f'ls -p {d}\n'
+        script += 'quit\n'
+
+        try:
+            r = subprocess.run(
+                ['debugfs', image],
+                input=script, capture_output=True,
+                text=True, timeout=300,
+            )
+        except Exception:
+            continue
+
+        cur = None
+        for line in r.stdout.splitlines():
+            if line.startswith(MARK):
+                cur = line[len(MARK):]
+                continue
+            if cur is None:
+                continue
+            parts = line.split('/')
+            if len(parts) < 8:
+                continue
+            name = parts[-2]        # name before trailing slash
+            mode = parts[2] if len(parts) > 2 else ''
+            if not name or name in ('.', '..'):
+                continue
+            full = cur.rstrip('/') + '/' + name
+            if mode.startswith('04'):   # octal mode 040xxx = directory
+                dirs.append(full)
+            else:
+                results.append(prefix + full)
+
+    return sorted(results)
+
+image, prefix = sys.argv[1], sys.argv[2]
+for f in list_ext4(image, prefix):
+    print(f)
+PYEOF
+
+    rm -f "$raw"
+}
+
+# ---------------------------------------------------------------------------
 # Generic: list all files from a partition image.
-# Strategy (in order): fuse2fs → loop-mount → warn.
-# fuse2fs is preferred because it doesn't need loop device kernel support.
+# Strategy: loop-mount first (fast when available), then Python/debugfs
+# (always works on any runner, no mount or loop device needed).
 # ---------------------------------------------------------------------------
 
 list_image_files() {
@@ -260,15 +311,14 @@ list_image_files() {
 
     local result=""
 
-    # 1. fuse2fs — FUSE-based, no loop device required
-    if have_cmd fuse2fs; then
-        result=$(list_img_fuse2fs "$img" "$prefix")
+    # 1. Loop-mount (fast when the kernel supports loop devices)
+    if have_cmd sudo; then
+        result=$(list_img_mount "$img" "$prefix")
     fi
 
-    # 2. loop-mount fallback (needs kernel loop support)
-    if [[ -z "$result" ]] && have_cmd sudo; then
-        info "    fuse2fs gave no output; trying loop-mount for $(basename "$img")"
-        result=$(list_img_mount "$img" "$prefix")
+    # 2. Python + debugfs (no mount needed; works on any CI runner)
+    if [[ -z "$result" ]] && have_cmd debugfs && have_cmd python3; then
+        result=$(list_img_debugfs_recursive "$img" "$prefix")
     fi
 
     if [[ -n "$result" ]]; then
